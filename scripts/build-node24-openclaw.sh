@@ -108,6 +108,16 @@ def replace_once(relative, old, new):
     path.write_text(text.replace(old, new, 1))
 
 
+def replace_exact_count(relative, old, new, expected):
+    path = root / relative
+    text = path.read_text()
+    if text.count(old) != expected:
+        raise SystemExit(
+            f"{relative}: expected {expected} audited matches for {old!r}"
+        )
+    path.write_text(text.replace(old, new))
+
+
 replace_once(
     "node.gyp",
     """        [ 'node_shared=="true"', {
@@ -185,13 +195,44 @@ replace_once(
         if self.flavor not in ("mac", "ios") or len(self.archs) == 1:""",
 )
 
+# NodeMobile disables Intl, but current OpenClaw requires Unicode property
+# regular expressions. Full ICU avoids fragile JavaScript rewrites and keeps
+# security-sensitive normalization behavior intact.
+replace_exact_count(
+    "tools/ios_framework_prepare.sh",
+    "--with-intl=none",
+    "--with-intl=full-icu",
+    3,
+)
+replace_once(
+    "tools/ios_framework_prepare.sh",
+    """    --without-node-code-cache \\
+    --without-node-snapshot
+  make -j$(getconf _NPROCESSORS_ONLN)
+
+  # Move compilation outputs""",
+    """    --without-node-code-cache \\
+    --without-node-snapshot
+  make -j$(getconf _NPROCESSORS_ONLN)
+  echo "Built target ICU archives:"
+  ls -lh $LIBRARY_PATH/libicu*.a
+
+  # Move compilation outputs""",
+)
+
 # Node 24.15 split the CommonJS lexer implementation into libmerve.a. The
-# NodeMobile wrapper predates that archive, so copy it into the framework
-# project and add it immediately after libnode in the static link order.
+# NodeMobile wrapper also predates the ICU archives because it disabled Intl.
+# Copy all providers into the framework and keep them after their consumers in
+# the static link order.
 replace_once(
     "tools/ios_framework_prepare.sh",
     '  "libnode.a"\n  "libopenssl.a"',
-    '  "libnode.a"\n  "libmerve.a"\n  "libopenssl.a"',
+    '  "libnode.a"\n'
+    '  "libmerve.a"\n'
+    '  "libicui18n.a"\n'
+    '  "libicuucx.a"\n'
+    '  "libicudata.a"\n'
+    '  "libopenssl.a"',
 )
 
 project = "tools/ios-framework/NodeMobile.xcodeproj/project.pbxproj"
@@ -203,9 +244,25 @@ replace_once(
 )
 replace_once(
     project,
+    "\t\tC0DEC0DE0000000000000001 /* libmerve.a in Frameworks */ = {isa = PBXBuildFile; fileRef = C0DEC0DE0000000000000002 /* libmerve.a */; };\n",
+    "\t\tC0DEC0DE0000000000000001 /* libmerve.a in Frameworks */ = {isa = PBXBuildFile; fileRef = C0DEC0DE0000000000000002 /* libmerve.a */; };\n"
+    "\t\tC0DEC0DE0000000000000003 /* libicui18n.a in Frameworks */ = {isa = PBXBuildFile; fileRef = C0DEC0DE0000000000000004 /* libicui18n.a */; };\n"
+    "\t\tC0DEC0DE0000000000000005 /* libicuucx.a in Frameworks */ = {isa = PBXBuildFile; fileRef = C0DEC0DE0000000000000006 /* libicuucx.a */; };\n"
+    "\t\tC0DEC0DE0000000000000007 /* libicudata.a in Frameworks */ = {isa = PBXBuildFile; fileRef = C0DEC0DE0000000000000008 /* libicudata.a */; };\n",
+)
+replace_once(
+    project,
     "\t\t3376C91D1EC3922F0007AD59 /* libnode.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; name = libnode.a; path = bin/libnode.a; sourceTree = \"<group>\"; };\n",
     "\t\t3376C91D1EC3922F0007AD59 /* libnode.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; name = libnode.a; path = bin/libnode.a; sourceTree = \"<group>\"; };\n"
     "\t\tC0DEC0DE0000000000000002 /* libmerve.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; name = libmerve.a; path = bin/libmerve.a; sourceTree = \"<group>\"; };\n",
+)
+replace_once(
+    project,
+    "\t\tC0DEC0DE0000000000000002 /* libmerve.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; name = libmerve.a; path = bin/libmerve.a; sourceTree = \"<group>\"; };\n",
+    "\t\tC0DEC0DE0000000000000002 /* libmerve.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; name = libmerve.a; path = bin/libmerve.a; sourceTree = \"<group>\"; };\n"
+    "\t\tC0DEC0DE0000000000000004 /* libicui18n.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; name = libicui18n.a; path = bin/libicui18n.a; sourceTree = \"<group>\"; };\n"
+    "\t\tC0DEC0DE0000000000000006 /* libicuucx.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; name = libicuucx.a; path = bin/libicuucx.a; sourceTree = \"<group>\"; };\n"
+    "\t\tC0DEC0DE0000000000000008 /* libicudata.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; name = libicudata.a; path = bin/libicudata.a; sourceTree = \"<group>\"; };\n",
 )
 replace_once(
     project,
@@ -215,9 +272,25 @@ replace_once(
 )
 replace_once(
     project,
+    "\t\t\t\tC0DEC0DE0000000000000001 /* libmerve.a in Frameworks */,\n",
+    "\t\t\t\tC0DEC0DE0000000000000001 /* libmerve.a in Frameworks */,\n"
+    "\t\t\t\tC0DEC0DE0000000000000003 /* libicui18n.a in Frameworks */,\n"
+    "\t\t\t\tC0DEC0DE0000000000000005 /* libicuucx.a in Frameworks */,\n"
+    "\t\t\t\tC0DEC0DE0000000000000007 /* libicudata.a in Frameworks */,\n",
+)
+replace_once(
+    project,
     "\t\t\t\t3376C91D1EC3922F0007AD59 /* libnode.a */,\n",
     "\t\t\t\t3376C91D1EC3922F0007AD59 /* libnode.a */,\n"
     "\t\t\t\tC0DEC0DE0000000000000002 /* libmerve.a */,\n",
+)
+replace_once(
+    project,
+    "\t\t\t\tC0DEC0DE0000000000000002 /* libmerve.a */,\n",
+    "\t\t\t\tC0DEC0DE0000000000000002 /* libmerve.a */,\n"
+    "\t\t\t\tC0DEC0DE0000000000000004 /* libicui18n.a */,\n"
+    "\t\t\t\tC0DEC0DE0000000000000006 /* libicuucx.a */,\n"
+    "\t\t\t\tC0DEC0DE0000000000000008 /* libicudata.a */,\n",
 )
 PY
 
@@ -276,6 +349,7 @@ codesign --force --sign - --timestamp=none "${dist_root}/node-ios"
   echo "Node.js target tag: ${target_tag}"
   echo "Node.js target commit: ${target_commit}"
   echo "iOS donor commit: ${mobile_commit}"
+  echo "Intl mode: full-icu"
   echo "OpenClaw engine compatibility: >=24.15.0 <25"
 } >> "${dist_root}/BUILD-REPORT.txt"
 

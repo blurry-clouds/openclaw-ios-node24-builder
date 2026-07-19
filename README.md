@@ -25,4 +25,7 @@ require device-local pseudo-signing with its own appropriate entitlements.
 This is an experiment for an iPhone 7 Plus-class arm64 device on iOS 15. It
 does not bypass Activation Lock, install a jailbreak, provide an App Store
 application, or include OpenClaw itself. NodeMobile disables V8 WebAssembly,
-and iOS-incompatible native Node add-ons remain unsupported.
+and iOS-incompatible native Node add-ons remain unsupported. The build enables
+full ICU because current OpenClaw bundles require Unicode-property regular
+expressions that the upstream mobile wrapper's `--with-intl=none` build cannot
+parse.
