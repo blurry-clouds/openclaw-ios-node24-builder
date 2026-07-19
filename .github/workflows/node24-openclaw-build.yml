@@ -1,0 +1,58 @@
+name: Build OpenClaw-compatible Node 24 iOS
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: node24-openclaw-build
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Node 24.15 arm64 iOS
+    runs-on: macos-15
+    timeout-minutes: 180
+
+    steps:
+      - name: Free disk space for V8
+        env:
+          XCODE_VERSION: "16.4"
+        run: |
+          sudo rm -rf /Library/Frameworks/Mono.framework
+          sudo rm -rf /Library/Frameworks/Xamarin.iOS.framework
+          sudo rm -rf /Library/Frameworks/Xamarin.Android.framework
+          sudo rm -rf /Users/runner/Library/Android
+          sudo rm -rf /usr/local/share/powershell
+          sudo find /Applications -type d -name "Xcode_*.app" ! -name "Xcode_${XCODE_VERSION}.app" -prune -exec rm -rf "{}" \;
+
+      - name: Check out experiment
+        uses: actions/checkout@v6
+
+      - name: Select Xcode 16.4
+        run: sudo xcode-select --switch /Applications/Xcode_16.4.app
+
+      - name: Select Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Restore legacy Python build support
+        run: python -m pip install setuptools
+
+      - name: Build and inspect OpenClaw-compatible bundle
+        env:
+          PYTHON: ${{ env.pythonLocation }}/bin/python3
+        run: ./scripts/build-node24-openclaw.sh
+
+      - name: Upload runtime bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: node24-openclaw-ios-arm64-${{ github.sha }}
+          path: |
+            dist/node24-openclaw-ios-arm64.tar.gz
+            dist/node24-openclaw-ios-bundle/BUILD-REPORT.txt
+          if-no-files-found: error
+          retention-days: 7
