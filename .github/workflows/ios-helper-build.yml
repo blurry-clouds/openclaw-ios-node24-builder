@@ -1,0 +1,60 @@
+name: Build iOS capability helper
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - codex/ios-helper-camera
+    paths:
+      - "ios-helper/**"
+      - ".github/workflows/ios-helper-build.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build arm64 iOS helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdk="$(xcrun --sdk iphoneos --show-sdk-path)"
+          mkdir -p artifact
+          xcrun --sdk iphoneos clang \
+            -arch arm64 \
+            -miphoneos-version-min=15.0 \
+            -isysroot "$sdk" \
+            -fobjc-arc \
+            -Wall -Wextra -Werror \
+            -framework Foundation \
+            -framework AVFoundation \
+            -framework UIKit \
+            -framework ImageIO \
+            -sectcreate __TEXT __info_plist ios-helper/Info.plist \
+            ios-helper/OpenClawIOSHelper.m \
+            -o artifact/openclaw-ios-helper
+          codesign --force --sign - \
+            --entitlements ios-helper/entitlements-minimal.plist \
+            artifact/openclaw-ios-helper
+          cp ios-helper/Info.plist artifact/
+          cp ios-helper/entitlements-minimal.plist artifact/
+
+      - name: Inspect artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          file artifact/openclaw-ios-helper
+          lipo -archs artifact/openclaw-ios-helper | grep -qx arm64
+          otool -l artifact/openclaw-ios-helper |
+            awk '/LC_BUILD_VERSION/{seen=1} seen{print} /sdk/{if(seen){exit}}'
+          codesign -d --entitlements :- artifact/openclaw-ios-helper
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openclaw-ios-helper
+          path: artifact/
+          if-no-files-found: error
