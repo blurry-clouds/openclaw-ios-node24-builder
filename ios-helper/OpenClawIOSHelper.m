@@ -255,6 +255,8 @@ static NSData *ReencodeJPEG(NSData *source,
     return encoded;
 }
 
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
 static NSDictionary *CameraSnap(NSDictionary *params) {
     UIApplication *application = [UIApplication sharedApplication];
     for (NSUInteger attempt = 0;
@@ -297,28 +299,11 @@ static NSDictionary *CameraSnap(NSDictionary *params) {
     VideoFrameCaptureDelegate *delegate =
         [[VideoFrameCaptureDelegate alloc] init];
     delegate.semaphore = dispatch_semaphore_create(0);
-    delegate.notBefore =
-        CFAbsoluteTimeGetCurrent() + (delayMs / 1000.0);
 
     AVCaptureSession *session = [[AVCaptureSession alloc] init];
-    AVCaptureVideoDataOutput *output =
-        [[AVCaptureVideoDataOutput alloc] init];
-    output.alwaysDiscardsLateVideoFrames = YES;
-    NSArray<NSNumber *> *availablePixelFormats =
-        output.availableVideoCVPixelFormatTypes ?: @[];
-    NSNumber *preferredPixelFormat = @(kCVPixelFormatType_32BGRA);
-    NSNumber *selectedPixelFormat =
-        [availablePixelFormats containsObject:preferredPixelFormat]
-            ? preferredPixelFormat
-            : availablePixelFormats.firstObject;
-    if (selectedPixelFormat) {
-        output.videoSettings = @{
-            (id)kCVPixelBufferPixelFormatTypeKey: selectedPixelFormat,
-        };
-    }
-    dispatch_queue_t frameQueue = dispatch_queue_create(
-        "ai.openclaw.camera.frames", DISPATCH_QUEUE_SERIAL);
-    [output setSampleBufferDelegate:delegate queue:frameQueue];
+    AVCaptureStillImageOutput *output =
+        [[AVCaptureStillImageOutput alloc] init];
+    output.outputSettings = @{AVVideoCodecKey: AVVideoCodecTypeJPEG};
 
     [session beginConfiguration];
     if ([session canSetSessionPreset:AVCaptureSessionPresetPhoto]) {
@@ -334,7 +319,7 @@ static NSDictionary *CameraSnap(NSDictionary *params) {
         [session addOutput:output];
     } else {
         return Failure(@"CAMERA_UNAVAILABLE",
-                       @"capture session rejected video frame output");
+                       @"capture session rejected still-image output");
     }
     [session commitConfiguration];
 
@@ -396,26 +381,49 @@ static NSDictionary *CameraSnap(NSDictionary *params) {
                        @"iOS did not start the headless capture session");
     }
 
+    if (delayMs > 0) {
+        [NSThread sleepForTimeInterval:delayMs / 1000.0];
+    }
+    AVCaptureConnection *imageConnection =
+        [output connectionWithMediaType:AVMediaTypeVideo];
+    if (!imageConnection) {
+        [session stopRunning];
+        [notificationCenter removeObserver:runtimeErrorObserver];
+        [notificationCenter removeObserver:interruptionObserver];
+        [previewLayer removeFromSuperlayer];
+        return Failure(@"CAMERA_CAPTURE_FAILED",
+                       @"still-image output has no video connection");
+    }
+    [output
+        captureStillImageAsynchronouslyFromConnection:imageConnection
+        completionHandler:^(CMSampleBufferRef imageDataSampleBuffer,
+                            NSError *captureError) {
+        if (captureError) {
+            delegate.errorMessage = captureError.localizedDescription;
+        } else if (imageDataSampleBuffer) {
+            delegate.frameData = [AVCaptureStillImageOutput
+                jpegStillImageNSDataRepresentation:imageDataSampleBuffer];
+        } else {
+            delegate.errorMessage = @"camera returned no still-image sample";
+        }
+        dispatch_semaphore_signal(delegate.semaphore);
+    }];
+
     long waitResult = dispatch_semaphore_wait(
         delegate.semaphore,
         dispatch_time(DISPATCH_TIME_NOW, 25 * NSEC_PER_SEC));
-    AVCaptureConnection *videoConnection =
-        [output connectionWithMediaType:AVMediaTypeVideo];
     NSString *timeoutDiagnostics = [NSString stringWithFormat:
-        @"camera video frame capture timed out "
+        @"camera still-image capture timed out "
          "(appState=%ld sessionRunning=%@ sessionInterrupted=%@ "
          "deviceConnected=%@ connectionPresent=%@ connectionEnabled=%@ "
-         "connectionActive=%@ selectedPixelFormat=%@ availablePixelFormats=%@)",
+         "connectionActive=%@)",
         (long)application.applicationState,
         session.isRunning ? @"yes" : @"no",
         session.isInterrupted ? @"yes" : @"no",
         device.isConnected ? @"yes" : @"no",
-        videoConnection ? @"yes" : @"no",
-        videoConnection.enabled ? @"yes" : @"no",
-        videoConnection.active ? @"yes" : @"no",
-        selectedPixelFormat ?: @"default",
-        availablePixelFormats];
-    [output setSampleBufferDelegate:nil queue:NULL];
+        imageConnection ? @"yes" : @"no",
+        imageConnection.enabled ? @"yes" : @"no",
+        imageConnection.active ? @"yes" : @"no"];
     [session stopRunning];
     [notificationCenter removeObserver:runtimeErrorObserver];
     [notificationCenter removeObserver:interruptionObserver];
@@ -465,6 +473,7 @@ static NSDictionary *CameraSnap(NSDictionary *params) {
         },
     };
 }
+#pragma clang diagnostic pop
 
 static NSDictionary *DispatchCommand(NSString *command,
                                      NSDictionary *params) {
