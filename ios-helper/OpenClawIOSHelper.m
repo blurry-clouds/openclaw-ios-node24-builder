@@ -350,8 +350,39 @@ static NSDictionary *CameraSnap(NSDictionary *params) {
         dispatch_sync(dispatch_get_main_queue(), installPreview);
     }
 
+    NSNotificationCenter *notificationCenter =
+        [NSNotificationCenter defaultCenter];
+    id runtimeErrorObserver = [notificationCenter
+        addObserverForName:AVCaptureSessionRuntimeErrorNotification
+                    object:session
+                     queue:nil
+                usingBlock:^(NSNotification *notification) {
+        NSError *runtimeError =
+            notification.userInfo[AVCaptureSessionErrorKey];
+        delegate.errorMessage = runtimeError
+            ? [NSString stringWithFormat:@"capture runtime error %ld: %@",
+                  (long)runtimeError.code,
+                  runtimeError.localizedDescription]
+            : @"capture session reported a runtime error";
+        dispatch_semaphore_signal(delegate.semaphore);
+    }];
+    id interruptionObserver = [notificationCenter
+        addObserverForName:AVCaptureSessionWasInterruptedNotification
+                    object:session
+                     queue:nil
+                usingBlock:^(NSNotification *notification) {
+        NSNumber *reason =
+            notification.userInfo[AVCaptureSessionInterruptionReasonKey];
+        delegate.errorMessage = [NSString
+            stringWithFormat:@"capture session interrupted (reason %@)",
+                             reason ?: @"unknown"];
+        dispatch_semaphore_signal(delegate.semaphore);
+    }];
+
     [session startRunning];
     if (!session.isRunning) {
+        [notificationCenter removeObserver:runtimeErrorObserver];
+        [notificationCenter removeObserver:interruptionObserver];
         [previewLayer removeFromSuperlayer];
         return Failure(@"NODE_BACKGROUND_UNAVAILABLE",
                        @"iOS did not start the headless capture session");
@@ -362,11 +393,17 @@ static NSDictionary *CameraSnap(NSDictionary *params) {
         dispatch_time(DISPATCH_TIME_NOW, 25 * NSEC_PER_SEC));
     [output setSampleBufferDelegate:nil queue:NULL];
     [session stopRunning];
+    [notificationCenter removeObserver:runtimeErrorObserver];
+    [notificationCenter removeObserver:interruptionObserver];
     dispatch_async(dispatch_get_main_queue(), ^{
         [previewLayer removeFromSuperlayer];
     });
 
     if (waitResult != 0) {
+        if (delegate.errorMessage) {
+            return Failure(@"CAMERA_CAPTURE_FAILED",
+                           delegate.errorMessage);
+        }
         return Failure(@"TIMEOUT", @"camera video frame capture timed out");
     }
     if (delegate.errorMessage || !delegate.frameData) {
