@@ -32,6 +32,9 @@ jobs:
             -Wall -Wextra -Werror \
             -framework Foundation \
             -framework AVFoundation \
+            -framework CoreImage \
+            -framework CoreMedia \
+            -framework CoreVideo \
             -framework UIKit \
             -framework ImageIO \
             -sectcreate __TEXT __info_plist ios-helper/Info.plist \

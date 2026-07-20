@@ -1,4 +1,7 @@
 #import <AVFoundation/AVFoundation.h>
+#import <CoreImage/CoreImage.h>
+#import <CoreMedia/CoreMedia.h>
+#import <CoreVideo/CoreVideo.h>
 #import <Foundation/Foundation.h>
 #import <ImageIO/ImageIO.h>
 #import <UIKit/UIKit.h>
@@ -122,20 +125,53 @@ static BOOL EnsureMediaPermission(AVMediaType mediaType,
     return YES;
 }
 
-@interface PhotoCaptureDelegate : NSObject <AVCapturePhotoCaptureDelegate>
-@property(nonatomic, strong) NSData *photoData;
-@property(nonatomic, strong) NSError *error;
+@interface VideoFrameCaptureDelegate
+    : NSObject <AVCaptureVideoDataOutputSampleBufferDelegate>
+@property(nonatomic, strong) NSData *frameData;
+@property(nonatomic, copy) NSString *errorMessage;
 @property(nonatomic, strong) dispatch_semaphore_t semaphore;
+@property(nonatomic) CFAbsoluteTime notBefore;
+@property(nonatomic) BOOL captured;
 @end
 
-@implementation PhotoCaptureDelegate
-- (void)captureOutput:(AVCapturePhotoOutput *)output
-    didFinishProcessingPhoto:(AVCapturePhoto *)photo
-                       error:(NSError *)error {
+@implementation VideoFrameCaptureDelegate
+- (void)captureOutput:(AVCaptureOutput *)output
+    didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
+           fromConnection:(AVCaptureConnection *)connection {
     (void)output;
-    self.error = error;
-    if (!error) {
-        self.photoData = [photo fileDataRepresentation];
+    (void)connection;
+    if (self.captured || CFAbsoluteTimeGetCurrent() < self.notBefore) {
+        return;
+    }
+    @synchronized(self) {
+        if (self.captured) {
+            return;
+        }
+        self.captured = YES;
+    }
+
+    CVImageBufferRef imageBuffer =
+        CMSampleBufferGetImageBuffer(sampleBuffer);
+    if (!imageBuffer) {
+        self.errorMessage = @"camera returned no video frame";
+        dispatch_semaphore_signal(self.semaphore);
+        return;
+    }
+
+    CIImage *image = [CIImage imageWithCVPixelBuffer:imageBuffer];
+    CIContext *context = [CIContext contextWithOptions:nil];
+    CGImageRef cgImage =
+        [context createCGImage:image fromRect:image.extent];
+    if (!cgImage) {
+        self.errorMessage = @"could not render camera video frame";
+        dispatch_semaphore_signal(self.semaphore);
+        return;
+    }
+    UIImage *uiImage = [UIImage imageWithCGImage:cgImage];
+    CGImageRelease(cgImage);
+    self.frameData = UIImageJPEGRepresentation(uiImage, 0.95);
+    if (!self.frameData) {
+        self.errorMessage = @"could not encode camera video frame";
     }
     dispatch_semaphore_signal(self.semaphore);
 }
@@ -252,8 +288,33 @@ static NSDictionary *CameraSnap(NSDictionary *params) {
                        error.localizedDescription ?: @"could not open camera");
     }
 
+    NSNumber *delayValue =
+        [params[@"delayMs"] isKindOfClass:[NSNumber class]]
+            ? params[@"delayMs"]
+            : @200;
+    double delayMs = MIN(MAX(delayValue.doubleValue, 0), 5000);
+    VideoFrameCaptureDelegate *delegate =
+        [[VideoFrameCaptureDelegate alloc] init];
+    delegate.semaphore = dispatch_semaphore_create(0);
+    delegate.notBefore =
+        CFAbsoluteTimeGetCurrent() + (delayMs / 1000.0);
+
     AVCaptureSession *session = [[AVCaptureSession alloc] init];
-    AVCapturePhotoOutput *output = [[AVCapturePhotoOutput alloc] init];
+    AVCaptureVideoDataOutput *output =
+        [[AVCaptureVideoDataOutput alloc] init];
+    output.alwaysDiscardsLateVideoFrames = YES;
+    output.videoSettings = @{
+        (id)kCVPixelBufferPixelFormatTypeKey:
+            @(kCVPixelFormatType_32BGRA),
+    };
+    dispatch_queue_t frameQueue = dispatch_queue_create(
+        "ai.openclaw.camera.frames", DISPATCH_QUEUE_SERIAL);
+    [output setSampleBufferDelegate:delegate queue:frameQueue];
+
+    [session beginConfiguration];
+    if ([session canSetSessionPreset:AVCaptureSessionPresetPhoto]) {
+        session.sessionPreset = AVCaptureSessionPresetPhoto;
+    }
     if ([session canAddInput:input]) {
         [session addInput:input];
     } else {
@@ -264,8 +325,9 @@ static NSDictionary *CameraSnap(NSDictionary *params) {
         [session addOutput:output];
     } else {
         return Failure(@"CAMERA_UNAVAILABLE",
-                       @"capture session rejected photo output");
+                       @"capture session rejected video frame output");
     }
+    [session commitConfiguration];
 
     [session startRunning];
     if (!session.isRunning) {
@@ -273,37 +335,25 @@ static NSDictionary *CameraSnap(NSDictionary *params) {
                        @"iOS did not start the headless capture session");
     }
 
-    NSNumber *delayValue =
-        [params[@"delayMs"] isKindOfClass:[NSNumber class]]
-            ? params[@"delayMs"]
-            : @200;
-    double delayMs = MIN(MAX(delayValue.doubleValue, 0), 5000);
-    if (delayMs > 0) {
-        [NSThread sleepForTimeInterval:delayMs / 1000.0];
-    }
-
-    PhotoCaptureDelegate *delegate = [[PhotoCaptureDelegate alloc] init];
-    delegate.semaphore = dispatch_semaphore_create(0);
-    AVCapturePhotoSettings *settings = [AVCapturePhotoSettings photoSettings];
-    [output capturePhotoWithSettings:settings delegate:delegate];
     long waitResult = dispatch_semaphore_wait(
         delegate.semaphore,
-        dispatch_time(DISPATCH_TIME_NOW, 20 * NSEC_PER_SEC));
+        dispatch_time(DISPATCH_TIME_NOW, 25 * NSEC_PER_SEC));
+    [output setSampleBufferDelegate:nil queue:NULL];
     [session stopRunning];
 
     if (waitResult != 0) {
-        return Failure(@"TIMEOUT", @"camera capture timed out");
+        return Failure(@"TIMEOUT", @"camera video frame capture timed out");
     }
-    if (delegate.error || !delegate.photoData) {
+    if (delegate.errorMessage || !delegate.frameData) {
         return Failure(@"CAMERA_CAPTURE_FAILED",
-                       delegate.error.localizedDescription
-                           ?: @"camera returned no image data");
+                       delegate.errorMessage
+                           ?: @"camera returned no image frame");
     }
 
     NSUInteger width = 0;
     NSUInteger height = 0;
     NSData *jpeg = ReencodeJPEG(
-        delegate.photoData,
+        delegate.frameData,
         [params[@"maxWidth"] isKindOfClass:[NSNumber class]]
             ? params[@"maxWidth"]
             : @1600,
