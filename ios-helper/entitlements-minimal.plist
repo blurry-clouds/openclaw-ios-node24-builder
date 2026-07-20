@@ -9,6 +9,10 @@
   <array>
     <string>kTCCServiceCamera</string>
   </array>
+  <key>CanInheritApplicationStateFromOtherProcesses</key>
+  <true/>
+  <key>com.apple.private.xpc.domain-extension</key>
+  <true/>
   <key>platform-application</key>
   <true/>
   <key>com.apple.private.security.no-container</key>

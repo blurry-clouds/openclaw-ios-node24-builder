@@ -17,6 +17,7 @@
 
 static NSString *const OpenClawCameraSocketPath =
     @"/var/mobile/Documents/OpenClawCamera.sock";
+static UIWindow *OpenClawCameraWindow;
 
 static void WriteJSON(id value, NSFileHandle *handle) {
     NSError *error = nil;
@@ -329,8 +330,29 @@ static NSDictionary *CameraSnap(NSDictionary *params) {
     }
     [session commitConfiguration];
 
+    __block AVCaptureVideoPreviewLayer *previewLayer = nil;
+    void (^installPreview)(void) = ^{
+        UIView *hostView =
+            OpenClawCameraWindow.rootViewController.view;
+        if (!hostView) {
+            return;
+        }
+        previewLayer =
+            [AVCaptureVideoPreviewLayer layerWithSession:session];
+        previewLayer.frame = hostView.bounds;
+        previewLayer.videoGravity =
+            AVLayerVideoGravityResizeAspectFill;
+        [hostView.layer insertSublayer:previewLayer atIndex:0];
+    };
+    if (NSThread.isMainThread) {
+        installPreview();
+    } else {
+        dispatch_sync(dispatch_get_main_queue(), installPreview);
+    }
+
     [session startRunning];
     if (!session.isRunning) {
+        [previewLayer removeFromSuperlayer];
         return Failure(@"NODE_BACKGROUND_UNAVAILABLE",
                        @"iOS did not start the headless capture session");
     }
@@ -340,6 +362,9 @@ static NSDictionary *CameraSnap(NSDictionary *params) {
         dispatch_time(DISPATCH_TIME_NOW, 25 * NSEC_PER_SEC));
     [output setSampleBufferDelegate:nil queue:NULL];
     [session stopRunning];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [previewLayer removeFromSuperlayer];
+    });
 
     if (waitResult != 0) {
         return Failure(@"TIMEOUT", @"camera video frame capture timed out");
@@ -538,6 +563,7 @@ static void StartSocketServer(void) {
     self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
     self.window.rootViewController = controller;
     [self.window makeKeyAndVisible];
+    OpenClawCameraWindow = self.window;
     StartSocketServer();
     return YES;
 }
