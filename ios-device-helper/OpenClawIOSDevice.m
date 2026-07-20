@@ -343,11 +343,13 @@ static NSDictionary *AudioCapture(NSDictionary *params, BOOL includeData) {
     AVAudioSession *session = AVAudioSession.sharedInstance;
     NSError *error = nil;
     if (![session setCategory:AVAudioSessionCategoryRecord
-                         mode:AVAudioSessionModeMeasurement
+                         mode:AVAudioSessionModeDefault
                       options:0
-                        error:&error] ||
-        ![session setActive:YES error:&error]) {
-        return Failure(@"AUDIO_SESSION_FAILED", error.localizedDescription);
+                        error:&error]) {
+        return Failure(@"AUDIO_CATEGORY_FAILED", error.localizedDescription);
+    }
+    if (![session setActive:YES error:&error]) {
+        return Failure(@"AUDIO_ACTIVATION_FAILED", error.localizedDescription);
     }
     NSString *path = [@"/var/tmp"
         stringByAppendingPathComponent:[NSString
@@ -576,8 +578,11 @@ static NSDictionary *BluetoothScan(NSDictionary *params) {
         delegate.stateSemaphore,
         dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC));
     if (delegate.manager.state != CBManagerStatePoweredOn) {
-        return Failure(@"BLUETOOTH_UNAVAILABLE",
-                       @"Bluetooth is not powered on or permission is denied");
+        return Failure(
+            @"BLUETOOTH_UNAVAILABLE",
+            [NSString stringWithFormat:
+                @"Bluetooth manager state is %ld",
+                (long)delegate.manager.state]);
     }
     dispatch_sync(dispatch_get_main_queue(), ^{
         [delegate.manager
