@@ -7,6 +7,7 @@ on:
       - codex/ios-helper-camera
     paths:
       - "ios-helper/**"
+      - "ios-device-helper/**"
       - ".github/workflows/ios-helper-build.yml"
 
 permissions:
@@ -47,6 +48,36 @@ jobs:
           cp ios-helper/Info.plist artifact/
           cp ios-helper/entitlements-minimal.plist artifact/
 
+      - name: Build arm64 iOS device companion
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdk="$(xcrun --sdk iphoneos --show-sdk-path)"
+          mkdir -p device-artifact/OpenClawDevice.app
+          xcrun --sdk iphoneos clang \
+            -arch arm64 \
+            -miphoneos-version-min=15.0 \
+            -isysroot "$sdk" \
+            -fobjc-arc \
+            -Wall -Wextra -Werror \
+            -framework Foundation \
+            -framework AVFoundation \
+            -framework AudioToolbox \
+            -framework CoreBluetooth \
+            -framework CoreGraphics \
+            -framework CoreLocation \
+            -framework CoreMotion \
+            -framework UIKit \
+            -framework UserNotifications \
+            -sectcreate __TEXT __info_plist ios-device-helper/Info.plist \
+            ios-device-helper/OpenClawIOSDevice.m \
+            -o device-artifact/OpenClawDevice.app/openclaw-ios-device
+          cp ios-device-helper/Info.plist device-artifact/OpenClawDevice.app/
+          cp ios-device-helper/entitlements.plist device-artifact/
+          codesign --force --sign - \
+            --entitlements ios-device-helper/entitlements.plist \
+            device-artifact/OpenClawDevice.app/openclaw-ios-device
+
       - name: Inspect artifact
         shell: bash
         run: |
@@ -57,8 +88,39 @@ jobs:
             awk '/LC_BUILD_VERSION/{seen=1} seen{print} /sdk/{if(seen){exit}}'
           codesign -d --entitlements :- artifact/openclaw-ios-helper
 
+      - name: Inspect device companion
+        shell: bash
+        run: |
+          set -euo pipefail
+          executable=device-artifact/OpenClawDevice.app/openclaw-ios-device
+          file "$executable"
+          lipo -archs "$executable" | grep -qx arm64
+          platform="$(
+            otool -l "$executable" |
+              awk '/LC_BUILD_VERSION/{seen=1} seen && /platform/{print $2; exit}'
+          )"
+          test "$platform" = "2"
+          minos="$(
+            otool -l "$executable" |
+              awk '/LC_BUILD_VERSION/{seen=1} seen && /minos/{print $2; exit}'
+          )"
+          test "$minos" = "15.0"
+          otool -L "$executable"
+          plutil -lint device-artifact/OpenClawDevice.app/Info.plist
+          codesign --verify --strict "$executable"
+          codesign -d --entitlements :- "$executable"
+          shasum -a 256 "$executable" > device-artifact/SHA256SUMS
+
       - uses: actions/upload-artifact@v4
         with:
           name: openclaw-ios-helper
           path: artifact/
           if-no-files-found: error
+          retention-days: 7
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openclaw-ios-device-${{ github.sha }}
+          path: device-artifact/
+          if-no-files-found: error
+          retention-days: 7
