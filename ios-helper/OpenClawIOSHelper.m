@@ -305,7 +305,7 @@ static NSDictionary *CameraSnap(NSDictionary *params) {
         [[AVCaptureVideoDataOutput alloc] init];
     output.alwaysDiscardsLateVideoFrames = YES;
     NSArray<NSNumber *> *availablePixelFormats =
-        output.availableVideoPixelFormatTypes ?: @[];
+        output.availableVideoCVPixelFormatTypes ?: @[];
     NSNumber *preferredPixelFormat = @(kCVPixelFormatType_32BGRA);
     NSNumber *selectedPixelFormat =
         [availablePixelFormats containsObject:preferredPixelFormat]
