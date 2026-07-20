@@ -119,6 +119,7 @@ static NSDictionary *DeviceState(void) {
         @"lowPowerMode": @(NSProcessInfo.processInfo.lowPowerModeEnabled),
         @"thermalState": thermal,
         @"brightness": @(screen.brightness),
+        @"outputVolume": @(AVAudioSession.sharedInstance.outputVolume),
         @"screenScale": @(screen.scale),
         @"screenWidth": @(screen.bounds.size.width),
         @"screenHeight": @(screen.bounds.size.height),
