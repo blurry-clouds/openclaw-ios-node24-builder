@@ -2,7 +2,18 @@
 #import <Foundation/Foundation.h>
 #import <ImageIO/ImageIO.h>
 #import <UIKit/UIKit.h>
+#import <errno.h>
 #import <math.h>
+#import <signal.h>
+#import <stdio.h>
+#import <string.h>
+#import <sys/socket.h>
+#import <sys/stat.h>
+#import <sys/un.h>
+#import <unistd.h>
+
+static NSString *const OpenClawCameraSocketPath =
+    @"/var/mobile/Documents/OpenClawCamera.sock";
 
 static void WriteJSON(id value, NSFileHandle *handle) {
     NSError *error = nil;
@@ -208,6 +219,18 @@ static NSData *ReencodeJPEG(NSData *source,
 }
 
 static NSDictionary *CameraSnap(NSDictionary *params) {
+    UIApplication *application = [UIApplication sharedApplication];
+    for (NSUInteger attempt = 0;
+         application.applicationState != UIApplicationStateActive &&
+         attempt < 50;
+         attempt += 1) {
+        [NSThread sleepForTimeInterval:0.1];
+    }
+    if (application.applicationState != UIApplicationStateActive) {
+        return Failure(@"NODE_BACKGROUND_UNAVAILABLE",
+                       @"OpenClaw Camera must be visible in the foreground");
+    }
+
     NSString *permissionCode = nil;
     NSString *permissionMessage = nil;
     if (!EnsureMediaPermission(
@@ -307,6 +330,174 @@ static NSDictionary *CameraSnap(NSDictionary *params) {
     };
 }
 
+static NSDictionary *DispatchCommand(NSString *command,
+                                     NSDictionary *params) {
+    if ([command isEqualToString:@"camera.list"]) {
+        return CameraList();
+    }
+    if ([command isEqualToString:@"camera.snap"]) {
+        return CameraSnap(params);
+    }
+    return Failure(@"UNAVAILABLE", @"command not supported by helper");
+}
+
+static void HandleSocketConnection(int clientFD) {
+    @autoreleasepool {
+        NSFileHandle *handle =
+            [[NSFileHandle alloc] initWithFileDescriptor:clientFD
+                                          closeOnDealloc:YES];
+        NSData *data = [handle readDataToEndOfFile];
+        NSError *error = nil;
+        id value = data.length > 0
+            ? [NSJSONSerialization JSONObjectWithData:data
+                                              options:0
+                                                error:&error]
+            : nil;
+        if (![value isKindOfClass:[NSDictionary class]]) {
+            WriteJSON(
+                Failure(@"INVALID_REQUEST",
+                        error.localizedDescription
+                            ?: @"socket request must be a JSON object"),
+                handle);
+            return;
+        }
+
+        NSDictionary *request = value;
+        NSString *command =
+            [request[@"command"] isKindOfClass:[NSString class]]
+                ? request[@"command"]
+                : nil;
+        NSDictionary *params =
+            [request[@"params"] isKindOfClass:[NSDictionary class]]
+                ? request[@"params"]
+                : @{};
+        if (command.length == 0) {
+            WriteJSON(Failure(@"INVALID_REQUEST", @"command is required"),
+                      handle);
+            return;
+        }
+        WriteJSON(DispatchCommand(command, params), handle);
+    }
+}
+
+static void StartSocketServer(void) {
+    dispatch_async(
+        dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        const char *path = OpenClawCameraSocketPath.fileSystemRepresentation;
+        if (strlen(path) >= sizeof(((struct sockaddr_un *)0)->sun_path)) {
+            fprintf(stderr, "OpenClaw camera socket path is too long\n");
+            return;
+        }
+
+        unlink(path);
+        int serverFD = socket(AF_UNIX, SOCK_STREAM, 0);
+        if (serverFD < 0) {
+            fprintf(stderr, "OpenClaw camera socket failed: %s\n",
+                    strerror(errno));
+            return;
+        }
+
+        struct sockaddr_un address;
+        memset(&address, 0, sizeof(address));
+        address.sun_family = AF_UNIX;
+        memcpy(address.sun_path, path, strlen(path) + 1);
+        if (bind(serverFD, (struct sockaddr *)&address, sizeof(address)) != 0) {
+            fprintf(stderr, "OpenClaw camera bind failed: %s\n",
+                    strerror(errno));
+            close(serverFD);
+            return;
+        }
+        chmod(path, S_IRUSR | S_IWUSR);
+        if (listen(serverFD, 4) != 0) {
+            fprintf(stderr, "OpenClaw camera listen failed: %s\n",
+                    strerror(errno));
+            close(serverFD);
+            unlink(path);
+            return;
+        }
+
+        for (;;) {
+            int clientFD = accept(serverFD, NULL, NULL);
+            if (clientFD < 0) {
+                if (errno == EINTR) {
+                    continue;
+                }
+                fprintf(stderr, "OpenClaw camera accept failed: %s\n",
+                        strerror(errno));
+                break;
+            }
+            HandleSocketConnection(clientFD);
+        }
+        close(serverFD);
+        unlink(path);
+    });
+}
+
+@interface OpenClawCameraAppDelegate : UIResponder <UIApplicationDelegate>
+@property(nonatomic, strong) UIWindow *window;
+@end
+
+@implementation OpenClawCameraAppDelegate
+- (BOOL)application:(UIApplication *)application
+    didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
+    (void)application;
+    (void)launchOptions;
+    signal(SIGPIPE, SIG_IGN);
+
+    UIViewController *controller = [[UIViewController alloc] init];
+    controller.view.backgroundColor =
+        [UIColor colorWithRed:0.04 green:0.07 blue:0.12 alpha:1.0];
+
+    UILabel *title = [[UILabel alloc] init];
+    title.translatesAutoresizingMaskIntoConstraints = NO;
+    title.text = @"OpenClaw Camera";
+    title.textColor = UIColor.whiteColor;
+    title.font = [UIFont boldSystemFontOfSize:28.0];
+    title.textAlignment = NSTextAlignmentCenter;
+
+    UILabel *status = [[UILabel alloc] init];
+    status.translatesAutoresizingMaskIntoConstraints = NO;
+    status.text =
+        @"Ready for an explicit camera request.\n"
+         "Keep this screen visible while capturing.";
+    status.textColor = [UIColor colorWithWhite:0.82 alpha:1.0];
+    status.font = [UIFont systemFontOfSize:17.0];
+    status.numberOfLines = 0;
+    status.textAlignment = NSTextAlignmentCenter;
+
+    [controller.view addSubview:title];
+    [controller.view addSubview:status];
+    [NSLayoutConstraint activateConstraints:@[
+        [title.centerXAnchor
+            constraintEqualToAnchor:controller.view.centerXAnchor],
+        [title.centerYAnchor
+            constraintEqualToAnchor:controller.view.centerYAnchor
+                           constant:-32.0],
+        [status.topAnchor constraintEqualToAnchor:title.bottomAnchor
+                                         constant:18.0],
+        [status.leadingAnchor
+            constraintGreaterThanOrEqualToAnchor:controller.view.leadingAnchor
+                                          constant:28.0],
+        [status.trailingAnchor
+            constraintLessThanOrEqualToAnchor:controller.view.trailingAnchor
+                                       constant:-28.0],
+        [status.centerXAnchor
+            constraintEqualToAnchor:controller.view.centerXAnchor],
+    ]];
+
+    self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
+    self.window.rootViewController = controller;
+    [self.window makeKeyAndVisible];
+    StartSocketServer();
+    return YES;
+}
+
+- (void)applicationWillTerminate:(UIApplication *)application {
+    (void)application;
+    unlink(OpenClawCameraSocketPath.fileSystemRepresentation);
+}
+@end
+
 static NSDictionary *ReadRequest(void) {
     NSData *data = [[NSFileHandle fileHandleWithStandardInput] readDataToEndOfFile];
     if (data.length == 0) {
@@ -322,6 +513,11 @@ static NSDictionary *ReadRequest(void) {
 
 int main(int argc, char *argv[]) {
     @autoreleasepool {
+        if (argc == 1) {
+            return UIApplicationMain(
+                argc, argv, nil,
+                NSStringFromClass([OpenClawCameraAppDelegate class]));
+        }
         if (argc != 2) {
             WriteJSON(Failure(@"INVALID_REQUEST", @"exactly one command is required"),
                       [NSFileHandle fileHandleWithStandardOutput]);
@@ -335,14 +531,7 @@ int main(int argc, char *argv[]) {
             return 2;
         }
 
-        NSDictionary *result = nil;
-        if ([command isEqualToString:@"camera.list"]) {
-            result = CameraList();
-        } else if ([command isEqualToString:@"camera.snap"]) {
-            result = CameraSnap(params);
-        } else {
-            result = Failure(@"UNAVAILABLE", @"command not supported by helper");
-        }
+        NSDictionary *result = DispatchCommand(command, params);
         WriteJSON(result, [NSFileHandle fileHandleWithStandardOutput]);
         return [result[@"ok"] boolValue] ? 0 : 1;
     }

@@ -7,6 +7,8 @@
   <string>openclaw-ios-helper</string>
   <key>CFBundleIdentifier</key>
   <string>ai.openclaw.jailbreak-helper</string>
+  <key>CFBundleDisplayName</key>
+  <string>OpenClaw Camera</string>
   <key>CFBundleName</key>
   <string>OpenClaw iOS Helper</string>
   <key>CFBundlePackageType</key>
@@ -17,6 +19,18 @@
   <string>1</string>
   <key>MinimumOSVersion</key>
   <string>15.0</string>
+  <key>LSRequiresIPhoneOS</key>
+  <true/>
+  <key>UIRequiredDeviceCapabilities</key>
+  <array>
+    <string>still-camera</string>
+  </array>
+  <key>UIRequiresFullScreen</key>
+  <true/>
+  <key>UISupportedInterfaceOrientations</key>
+  <array>
+    <string>UIInterfaceOrientationPortrait</string>
+  </array>
   <key>NSCameraUsageDescription</key>
   <string>OpenClaw captures a photo only after an explicit camera.snap command.</string>
   <key>NSMicrophoneUsageDescription</key>
