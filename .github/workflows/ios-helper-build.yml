@@ -32,6 +32,7 @@ jobs:
             -Wall -Wextra -Werror \
             -framework Foundation \
             -framework AVFoundation \
+            -framework CoreGraphics \
             -framework CoreImage \
             -framework CoreMedia \
             -framework CoreVideo \
