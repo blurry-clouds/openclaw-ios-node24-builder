@@ -304,10 +304,18 @@ static NSDictionary *CameraSnap(NSDictionary *params) {
     AVCaptureVideoDataOutput *output =
         [[AVCaptureVideoDataOutput alloc] init];
     output.alwaysDiscardsLateVideoFrames = YES;
-    output.videoSettings = @{
-        (id)kCVPixelBufferPixelFormatTypeKey:
-            @(kCVPixelFormatType_32BGRA),
-    };
+    NSArray<NSNumber *> *availablePixelFormats =
+        output.availableVideoPixelFormatTypes ?: @[];
+    NSNumber *preferredPixelFormat = @(kCVPixelFormatType_32BGRA);
+    NSNumber *selectedPixelFormat =
+        [availablePixelFormats containsObject:preferredPixelFormat]
+            ? preferredPixelFormat
+            : availablePixelFormats.firstObject;
+    if (selectedPixelFormat) {
+        output.videoSettings = @{
+            (id)kCVPixelBufferPixelFormatTypeKey: selectedPixelFormat,
+        };
+    }
     dispatch_queue_t frameQueue = dispatch_queue_create(
         "ai.openclaw.camera.frames", DISPATCH_QUEUE_SERIAL);
     [output setSampleBufferDelegate:delegate queue:frameQueue];
@@ -391,6 +399,22 @@ static NSDictionary *CameraSnap(NSDictionary *params) {
     long waitResult = dispatch_semaphore_wait(
         delegate.semaphore,
         dispatch_time(DISPATCH_TIME_NOW, 25 * NSEC_PER_SEC));
+    AVCaptureConnection *videoConnection =
+        [output connectionWithMediaType:AVMediaTypeVideo];
+    NSString *timeoutDiagnostics = [NSString stringWithFormat:
+        @"camera video frame capture timed out "
+         "(appState=%ld sessionRunning=%@ sessionInterrupted=%@ "
+         "deviceConnected=%@ connectionPresent=%@ connectionEnabled=%@ "
+         "connectionActive=%@ selectedPixelFormat=%@ availablePixelFormats=%@)",
+        (long)application.applicationState,
+        session.isRunning ? @"yes" : @"no",
+        session.isInterrupted ? @"yes" : @"no",
+        device.isConnected ? @"yes" : @"no",
+        videoConnection ? @"yes" : @"no",
+        videoConnection.enabled ? @"yes" : @"no",
+        videoConnection.active ? @"yes" : @"no",
+        selectedPixelFormat ?: @"default",
+        availablePixelFormats];
     [output setSampleBufferDelegate:nil queue:NULL];
     [session stopRunning];
     [notificationCenter removeObserver:runtimeErrorObserver];
@@ -404,7 +428,7 @@ static NSDictionary *CameraSnap(NSDictionary *params) {
             return Failure(@"CAMERA_CAPTURE_FAILED",
                            delegate.errorMessage);
         }
-        return Failure(@"TIMEOUT", @"camera video frame capture timed out");
+        return Failure(@"TIMEOUT", timeoutDiagnostics);
     }
     if (delegate.errorMessage || !delegate.frameData) {
         return Failure(@"CAMERA_CAPTURE_FAILED",
